@@ -4,29 +4,34 @@
 LOG_FILE="/var/log/fail2ban_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-# Проверка, запущен ли скрипт от root
+# Проверка root-прав
 if [ "$EUID" -ne 0 ]; then
   echo "Пожалуйста, запустите скрипт с правами root (sudo)."
   exit 1
 fi
 
-# Обновляем систему
+# Обновление системы
 echo "Обновляем систему..."
-sudo apt-get update || { echo "Ошибка при обновлении пакетов"; exit 1; }
+apt-get update || { echo "Ошибка при обновлении пакетов"; exit 1; }
 
-# Устанавливаем Fail2Ban
+# Установка Fail2Ban
 echo "Устанавливаем Fail2Ban..."
-sudo apt-get install -y fail2ban || { echo "Ошибка при установке Fail2Ban"; exit 1; }
+apt-get install -y fail2ban || { echo "Ошибка при установке Fail2Ban"; exit 1; }
 
-# Создаем локальную копию конфигурации
-echo "Создаем локальную копию конфигурации..."
-sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local || { echo "Ошибка при копировании конфигурации"; exit 1; }
+# Создаем резервную копию конфигурации
+echo "Создаем резервную копию конфигурации..."
+BACKUP_FILE="/etc/fail2ban/jail.local.bak_$(date +%Y%m%d_%H%M%S)"
+if [ -f "/etc/fail2ban/jail.local" ]; then
+  cp /etc/fail2ban/jail.local "$BACKUP_FILE"
+  echo "Резервная копия сохранена в $BACKUP_FILE"
+else
+  cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local || { echo "Ошибка при копировании конфигурации"; exit 1; }
+fi
 
-# Настраиваем базовые параметры Fail2Ban
+# Настройка Fail2Ban (только если секции [sshd] нет)
 echo "Настраиваем Fail2Ban..."
-
-# Конфигурация для SSH
-sudo tee -a /etc/fail2ban/jail.local > /dev/null <<EOL
+if ! grep -q "^\[sshd\]" /etc/fail2ban/jail.local; then
+  cat >> /etc/fail2ban/jail.local <<EOL
 
 [sshd]
 enabled = true
@@ -35,35 +40,25 @@ bantime = 12h
 findtime = 10m
 ignoreip = 217.25.228.230
 EOL
+else
+  echo "Секция [sshd] уже существует. Проверьте её параметры вручную."
+fi
 
-# Конфигурация для защиты других служб (например, Apache, Nginx)
-# Раскомментируйте, если нужно:
-# sudo tee -a /etc/fail2ban/jail.local > /dev/null <<EOL
-# [apache]
-# enabled = true
-# maxretry = 5
-# bantime = 24h
-# findtime = 10m
+# Проверка синтаксиса перед перезапуском
+echo "Проверяем синтаксис конфигурации..."
+if ! fail2ban-client -t; then
+  echo "Ошибка в конфигурации Fail2Ban. Откатываем изменения..."
+  mv "$BACKUP_FILE" /etc/fail2ban/jail.local
+  exit 1
+fi
 
-# [nginx-http-auth]
-# enabled = true
-# maxretry = 3
-# bantime = 1h
-# findtime = 10m
-# EOL
-
-# Перезапускаем Fail2Ban для применения настроек
+# Перезапуск Fail2Ban
 echo "Перезапускаем Fail2Ban..."
-sudo systemctl restart fail2ban || { echo "Ошибка при перезапуске Fail2Ban"; exit 1; }
+systemctl restart fail2ban || { echo "Ошибка при перезапуске Fail2Ban"; exit 1; }
 
-# Проверяем статус Fail2Ban
+# Проверка статуса
 echo "Проверяем статус Fail2Ban..."
-sudo systemctl status fail2ban --no-pager
+systemctl status fail2ban --no-pager
 
-# Выводим информацию о настройках
-echo "Fail2Ban успешно установлен и настроен."
-echo "Текущие блокировки:"
-sudo fail2ban-client status
-
-# Все готово
-echo "Настройка Fail2Ban завершена. Логи доступны в $LOG_FILE."
+# Итог
+echo "Fail2Ban успешно настроен. Логи: $LOG_FILE"
